@@ -1,5 +1,5 @@
 """
-训练工具函数集合
+Collection of training utility functions
 """
 import os
 import sys
@@ -18,7 +18,7 @@ from torch.utils.data import Sampler
 from transformers import AutoTokenizer, AutoModel, AutoModelForSequenceClassification
 from model.model_minimind import MiniMindForCausalLM
 
-# ======== 模型参数量 ========
+# ======== Model parameter count ========
 def get_model_params(model, config):
     total = sum(p.numel() for p in model.parameters()) / 1e6
     n_routed = getattr(config, 'n_routed_experts', getattr(config, 'num_experts', 0))
@@ -32,28 +32,28 @@ def get_model_params(model, config):
     else: Logger(f'Model Params: {total:.2f}M')
 
 
-# ======== 主进程判断 ========
+# ======== Main process check ========
 def is_main_process():
     return not dist.is_initialized() or dist.get_rank() == 0
 
 
-# ======== 日志 ========
+# ======== Logging ========
 def Logger(content):
     if is_main_process():
         print(content)
 
 
-# ======== 混合精度类型 ========
+# ======== Mixed precision dtype ========
 def resolve_dtype(dtype, device):
     if dtype != "bfloat16" or not torch.cuda.is_available() or torch.device(device).type != "cuda":
         return dtype
     if torch.cuda.is_bf16_supported(including_emulation=False):
         return dtype
-    Logger(f"{torch.cuda.get_device_name(device)} 不原生支持 bfloat16，已回退为 float16")
+    Logger(f"{torch.cuda.get_device_name(device)} does not natively support bfloat16, falling back to float16")
     return "float16"
 
 
-# ======== 学习率 ========
+# ======== Learning rate ========
 def get_lr(current_step, total_steps, lr, warmup_ratio=0.0):
     warmup = max(1, int(warmup_ratio * total_steps)) if warmup_ratio > 0 else 0
     if current_step < warmup:
@@ -62,10 +62,10 @@ def get_lr(current_step, total_steps, lr, warmup_ratio=0.0):
     return lr * (0.1 + 0.45 * (1 + math.cos(angle)))
 
 
-# ======== 分布式初始化 ========
+# ======== Distributed initialization ========
 def init_distributed_mode():
     if int(os.environ.get("RANK", -1)) == -1:
-        return 0  # 非DDP模式
+        return 0  # Non-DDP mode
 
     dist.init_process_group(backend="nccl")
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -73,7 +73,7 @@ def init_distributed_mode():
     return local_rank
 
 
-# ======== 随机种子 ========
+# ======== Random seed ========
 def setup_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
@@ -84,7 +84,7 @@ def setup_seed(seed: int):
     torch.backends.cudnn.benchmark = False
 
 
-# ======== 断点保存与续训 ========
+# ======== Checkpoint saving and resuming ========
 def lm_checkpoint(lm_config, weight='full_sft', model=None, optimizer=None, epoch=0, step=0, wandb=None, save_dir='../checkpoints', **kwargs):
     os.makedirs(save_dir, exist_ok=True)
     moe_path = '_moe' if lm_config.use_moe else ''
@@ -128,19 +128,19 @@ def lm_checkpoint(lm_config, weight='full_sft', model=None, optimizer=None, epoc
         os.replace(resume_tmp, resume_path)
         del state_dict, resume_data
         torch.cuda.empty_cache()
-    else:  # 加载模式
+    else:  # Load mode
         if os.path.exists(resume_path):
             ckp_data = torch.load(resume_path, map_location='cpu')
             saved_ws = ckp_data.get('world_size', 1)
             current_ws = dist.get_world_size() if dist.is_initialized() else 1
             if saved_ws != current_ws:
                 ckp_data['step'] = ckp_data['step'] * saved_ws // current_ws
-                Logger(f'GPU数量变化({saved_ws}→{current_ws})，step已自动转换为{ckp_data["step"]}')
+                Logger(f'GPU count changed ({saved_ws}→{current_ws}), step automatically adjusted to {ckp_data["step"]}')
             return ckp_data
         return None
 
 
-# ======== 模型初始化 ========
+# ======== Model initialization ========
 def init_model(lm_config, from_weight='pretrain', tokenizer_path='../model', save_dir='../out', device='cuda'):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
     model = MiniMindForCausalLM(lm_config)
@@ -156,7 +156,7 @@ def init_model(lm_config, from_weight='pretrain', tokenizer_path='../model', sav
     return model.to(device), tokenizer
 
 
-# ======== 跳过批次采样器 ========
+# ======== Skip batch sampler ========
 class SkipBatchSampler(Sampler):
     def __init__(self, sampler, batch_size, skip_batches=0):
         self.sampler = sampler
@@ -183,7 +183,7 @@ class SkipBatchSampler(Sampler):
         return max(0, total_batches - self.skip_batches)
 
 
-# ======== 奖励模型 ========
+# ======== Reward model ========
 class LMForRewardModel:
     def __init__(self, model_path, device="cuda", dtype=torch.float16):
         self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -195,7 +195,7 @@ class LMForRewardModel:
     def get_score(self, messages, response):
         history_text = "\n".join([f"{m['role']}: {m['content']}" for m in messages[:-1]])
         last_query = messages[-1]['content'] if messages else ""
-        message_context = f"{history_text}\n以上是对话历史。我的新问题是：\n{last_query}" if history_text else last_query
+        message_context = f"{history_text}\nThe above is the conversation history. My new question is:\n{last_query}" if history_text else last_query
         eval_messages = [
             {"role": "user", "content": message_context},
             {"role": "assistant", "content": response}
@@ -204,13 +204,13 @@ class LMForRewardModel:
         return max(min(score, 3.0), -3.0)
 
 
-# ======== 数学表达式安全求值 ========
+# ======== Safe mathematical expression evaluation ========
 def safe_math_eval(expression):
-    """对模型生成的数学表达式求值：支持 + - * / // % **、math 白名单函数与 pi/e/tau 常量。"""
-    def pow_guard(base, exp):  # 幂运算统一走这里，拦截 9**9**9 / 10**99999 这类把进程算死的输入
-        if abs(exp) > 1e4 or (abs(base) > 1 and abs(exp) * math.log10(abs(base)) > 100): raise ValueError('幂运算结果过大')
+    """Evaluate model-generated math expressions: supports + - * / // % **, whitelisted math functions, and pi/e/tau constants."""
+    def pow_guard(base, exp):  # Route all exponentiation here to block inputs like 9**9**9 / 10**99999 that hang the process
+        if abs(exp) > 1e4 or (abs(base) > 1 and abs(exp) * math.log10(abs(base)) > 100): raise ValueError('Exponentiation result too large')
         return base ** exp
-    def resolve(node):  # 同时兼容 sqrt(4) 与 math.sqrt(4) 两种写法
+    def resolve(node):  # Support both sqrt(4) and math.sqrt(4)
         if isinstance(node, ast.Name): return node.id
         if isinstance(node, ast.Attribute) and getattr(node.value, 'id', '') == 'math': return node.attr
     def walk(node):
@@ -220,21 +220,21 @@ def safe_math_eval(expression):
         if isinstance(node, ast.UnaryOp): return unary_ops[type(node.op)](walk(node.operand))
         if isinstance(node, ast.BinOp): return bin_ops[type(node.op)](walk(node.left), walk(node.right))
         if isinstance(node, ast.Call) and not node.keywords: return funcs[resolve(node.func)](*map(walk, node.args))
-        raise ValueError(f'不支持的表达式语法: {type(node).__name__}')
+        raise ValueError(f'Unsupported expression syntax: {type(node).__name__}')
     consts = {'pi': math.pi, 'e': math.e, 'tau': math.tau}
     funcs = {'pow': pow_guard, **{n: getattr(math, n) for n in 'sqrt exp log log2 log10 sin cos tan asin acos atan atan2 sinh cosh tanh floor ceil trunc fabs fmod hypot gcd degrees radians'.split()}}
     bin_ops = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod, ast.Pow: pow_guard}
     unary_ops = {ast.UAdd: operator.pos, ast.USub: operator.neg}
     chars = str.maketrans({'^': '**', '×': '*', '÷': '/', '−': '-', '²': '**2', '³': '**3', '（': '(', '）': ')'})
     expr = str(expression).translate(chars).strip()
-    if not expr or len(expr) > 512: raise ValueError('表达式为空或过长')
+    if not expr or len(expr) > 512: raise ValueError('Expression is empty or too long')
     try:
         return walk(ast.parse(expr, mode='eval').body)
     except (KeyError, SyntaxError, TypeError):
-        raise ValueError('不支持的表达式语法') from None
+        raise ValueError('Unsupported expression syntax') from None
 
 
-# ======== 重复惩罚 ========
+# ======== Repetition penalty ========
 def rep_penalty(text, n=3, cap=0.5):
     cjk = ("\u3007\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af"
            "\U00020000-\U0002ee5f\U0002f800-\U0002fa1f\U00030000-\U0003347f")
